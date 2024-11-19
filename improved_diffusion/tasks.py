@@ -290,22 +290,16 @@ class SourceSeparationTask(BaseInverseTask):
     def task_type(self) -> TaskType:
         return TaskType.SOURCE_SEPARATION
 
-    def prepare_data(self, audio_files: List[str]):
-        n_samples = len(audio_files)
-        n_half_samples = n_samples // 2
-        n_half_samples = min(n_samples - n_half_samples, n_half_samples)
+    def prepare_data(self, audio_files: List[List[str]]):
+        n_samples = min([len(files) for files in audio_files])
 
-        files1 = random.sample(audio_files[:n_half_samples], k=n_half_samples)
-        files2 = random.sample(audio_files[n_half_samples:], k=n_half_samples)
-
-        assert len(files1) == len(files2)
-
-        return {"files": files1, "auxiliary_files": files2}
+        return {f"spk{i}": random.sample(files, k=n_samples)
+                for i, files in enumerate(audio_files)}
 
     def prepare_audio_before_degradation(self, x: List[torch.Tensor]) -> torch.Tensor:
         min_sample_length = min(map(lambda tensor: tensor.size(-1), x))
         truncated_x = list(map(lambda tensor: tensor[..., :min_sample_length], x))
-        return torch.cat(truncated_x, dim=-1)
+        return torch.cat(truncated_x, dim=0)
 
     def save_audios(
         self,
@@ -316,10 +310,10 @@ class SourceSeparationTask(BaseInverseTask):
         sr: int = 16000,
     ):
         pred_chunked = torch.chunk(
-            pred_sample, chunks=2, dim=-1
+            pred_sample, chunks=2, dim=0
         )  # explicit number of chunks 2
         orig_chunked = torch.chunk(
-            original_sample, chunks=2, dim=-1
+            original_sample, chunks=2, dim=0
         )  # explicit number of chunks 2
         for i, (cur_pred, cur_orig) in enumerate(zip(pred_chunked, orig_chunked)):
             name = f"Sample_{idx}_{i + 1}.wav"
@@ -337,4 +331,4 @@ class SourceSeparationTask(BaseInverseTask):
         )
 
     def degradation(self, x: torch.Tensor) -> torch.Tensor:
-        return x[:, :, : x.size(-1) // 2] + x[:, :, x.size(-1) // 2 :]
+        return torch.stack([s for s in torch.chunk(x, 2, dim=0)]).sum(0)
