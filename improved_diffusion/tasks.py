@@ -12,6 +12,14 @@ from improved_diffusion.datasets.utils import cut_audio_segment, mel_spectrogram
 from improved_diffusion.inference_utils import calculate_all_metrics, log_results
 from improved_diffusion.metrics import Metric
 
+from transformers import Wav2Vec2FeatureExtractor, Wav2Vec2Model, Wav2Vec2ForSequenceClassification
+
+# classifier = EncoderClassifier.from_hparams(source="speechbrain/spkrec-ecapa-voxceleb")
+model_name = "superb/wav2vec2-base-superb-sid"
+feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(model_name)
+wav2vec = Wav2Vec2ForSequenceClassification.from_pretrained(
+    model_name).to('cuda')
+
 
 class TaskType(Enum):
     BWE = auto()
@@ -59,7 +67,8 @@ class UnconditionalTask(AbstractTask):
     def save_audios(self, pred_sample: torch.Tensor, idx: int, sr: int = 16000):
         name = f"Sample_{idx}.wav"
         torchaudio.save(
-            os.path.join(self.generated_path, name), pred_sample.view(1, -1), sr
+            os.path.join(self.generated_path,
+                         name), pred_sample.view(1, -1), sr
         )
 
     def inference(
@@ -97,7 +106,8 @@ class UnconditionalTask(AbstractTask):
             del sample
             torch.cuda.empty_cache()
 
-        scores = calculate_all_metrics(fake_samples, self.metrics, reference_wavs=None)
+        scores = calculate_all_metrics(
+            fake_samples, self.metrics, reference_wavs=None)
         log_results(results_dir=self.output_dir, res=scores)
 
 
@@ -165,13 +175,16 @@ class BaseInverseTask(UnconditionalTask):
     ):
         name = f"Sample_{idx}.wav"
         torchaudio.save(
-            os.path.join(self.generated_path, name), pred_sample.view(1, -1), sr
+            os.path.join(self.generated_path,
+                         name), pred_sample.view(1, -1), sr
         )
         torchaudio.save(
-            os.path.join(self.degraded_path, name), degraded_sample.view(1, -1), sr
+            os.path.join(self.degraded_path,
+                         name), degraded_sample.view(1, -1), sr
         )
         torchaudio.save(
-            os.path.join(self.original_path, name), original_sample.view(1, -1), sr
+            os.path.join(self.original_path,
+                         name), original_sample.view(1, -1), sr
         )
 
     @abstractmethod
@@ -213,7 +226,8 @@ class BaseInverseTask(UnconditionalTask):
             real_samples.append(x)
             fake_samples.append(sample)
 
-            self.save_audios(sample, degraded_sample, x, i, sr=target_sample_rate)
+            self.save_audios(sample, degraded_sample, x,
+                             i, sr=target_sample_rate)
 
             del sample, x, degraded_sample
             torch.cuda.empty_cache()
@@ -230,7 +244,8 @@ class BWETask(BaseInverseTask):
         return TaskType.BWE
 
     def degradation(self, x: torch.Tensor) -> torch.Tensor:
-        lp_filter = bwe_utils.get_FIR_lowpass(order=200, fc=2000, beta=1, sr=16000)
+        lp_filter = bwe_utils.get_FIR_lowpass(
+            order=200, fc=2000, beta=1, sr=16000)
         return bwe_utils.apply_low_pass_firwin(x, lp_filter)
 
 
@@ -275,13 +290,15 @@ class VocodingTask(BaseInverseTask):
     ):
         name = f"Sample_{idx}.wav"
         torchaudio.save(
-            os.path.join(self.generated_path, name), pred_sample.view(1, -1), sr
+            os.path.join(self.generated_path,
+                         name), pred_sample.view(1, -1), sr
         )
         torch.save(
             degraded_sample, os.path.join(self.degraded_path, name)
         )  # save mel spec tensor
         torchaudio.save(
-            os.path.join(self.original_path, name), original_sample.view(1, -1), sr
+            os.path.join(self.original_path,
+                         name), original_sample.view(1, -1), sr
         )
 
 
@@ -298,7 +315,8 @@ class SourceSeparationTask(BaseInverseTask):
 
     def prepare_audio_before_degradation(self, x: List[torch.Tensor]) -> torch.Tensor:
         min_sample_length = min(map(lambda tensor: tensor.size(-1), x))
-        truncated_x = list(map(lambda tensor: tensor[..., :min_sample_length], x))
+        truncated_x = list(
+            map(lambda tensor: tensor[..., :min_sample_length], x))
         return torch.cat(truncated_x, dim=0)
 
     def save_audios(
@@ -318,17 +336,84 @@ class SourceSeparationTask(BaseInverseTask):
         for i, (cur_pred, cur_orig) in enumerate(zip(pred_chunked, orig_chunked)):
             name = f"Sample_{idx}_{i + 1}.wav"
             torchaudio.save(
-                os.path.join(self.generated_path, name), cur_pred.view(1, -1), sr
+                os.path.join(self.generated_path,
+                             name), cur_pred.view(1, -1), sr
             )
             torchaudio.save(
-                os.path.join(self.original_path, name), cur_orig.view(1, -1), sr
+                os.path.join(self.original_path,
+                             name), cur_orig.view(1, -1), sr
             )
 
         # redefine name for degraded
         name = f"Sample_{idx}.wav"
         torchaudio.save(
-            os.path.join(self.degraded_path, name), degraded_sample.view(1, -1), sr
+            os.path.join(self.degraded_path,
+                         name), degraded_sample.view(1, -1), sr
         )
 
     def degradation(self, x: torch.Tensor) -> torch.Tensor:
         return torch.stack([s for s in torch.chunk(x, 2, dim=0)]).sum(0)
+
+    def inference(
+        self,
+        audio_files: List[str],
+        model: torch.nn.Module,
+        diffusion,
+        target_sample_rate: int = 16000,
+        segment_size: Optional[int] = None,
+        device: str = "cpu",
+    ):
+        assert self.task_type != TaskType.UNCONDITIONAL  # inverse tasks only
+        files_dict = self.prepare_data(audio_files)
+
+        fake_samples = []
+        real_samples = []
+        files_key = list(files_dict.keys())
+
+        for i, f in enumerate(zip(*files_dict.values())):
+            x = self.load_audios(f, target_sample_rate, segment_size, device)
+            x = self.prepare_audio_before_degradation(x)
+
+            reference_1 = random.choice(
+                [file for file in files_dict[files_key[0]] if file not in f[0]])
+            reference_2 = random.choice(
+                [file for file in files_dict[files_key[1]] if file not in f[1]])
+            reference_f = (reference_1, reference_2)
+            r_x = self.load_audios(
+                reference_f, target_sample_rate, segment_size, device)
+            r_x = self.prepare_audio_before_degradation(r_x)
+            f_e = feature_extractor(r_x.squeeze(
+                1), return_tensors="pt", sampling_rate=16000)
+
+            with torch.no_grad():
+                # r_embeddings = classifier.encode_batch(r_x.squeeze(1))
+                o = wav2vec(f_e.input_values.squeeze(0).to(device))
+                r_embeddings = o.hidden_states.maen(dim=1)
+
+            degraded_sample = self.degradation(x).cpu()
+            sample = diffusion.p_sample_loop(
+                model,
+                x.shape,
+                clip_denoised=False,
+                model_kwargs={},
+                sample_method=self.task_type,
+                orig_x=x,
+                progress=True,
+                degradation=self.degradation,
+                task_kwargs={"gt_e": r_embeddings, "gt_x": x},
+            ).cpu()
+
+            x = x.cpu()
+            real_samples.append(x)
+            fake_samples.append(sample)
+
+            self.save_audios(sample, degraded_sample, x,
+                             i, sr=target_sample_rate)
+
+            del sample, x, degraded_sample
+            torch.cuda.empty_cache()
+
+        scores = calculate_all_metrics(
+            fake_samples, self.metrics, reference_wavs=real_samples
+        )
+        log_results(results_dir=self.output_dir, res=scores)
