@@ -1,0 +1,6 @@
+outputs
+results
+*.pyc
+*.bin
+*.pth
+*.ckpt
