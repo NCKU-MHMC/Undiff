@@ -20,6 +20,8 @@ feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(model_name)
 wav2vec = Wav2Vec2ForSequenceClassification.from_pretrained(
     model_name).to('cuda')
 
+from speechbrain.inference.speaker import EncoderClassifier
+classifier = EncoderClassifier.from_hparams(source="speechbrain/spkrec-ecapa-voxceleb")
 
 class TaskType(Enum):
     BWE = auto()
@@ -374,21 +376,24 @@ class SourceSeparationTask(BaseInverseTask):
             x = self.load_audios(f, target_sample_rate, segment_size, device)
             x = self.prepare_audio_before_degradation(x)
 
-            reference_1 = random.choice(
-                [file for file in files_dict[files_key[0]] if file not in f[0]])
-            reference_2 = random.choice(
-                [file for file in files_dict[files_key[1]] if file not in f[1]])
-            reference_f = (reference_1, reference_2)
-            r_x = self.load_audios(
-                reference_f, target_sample_rate, segment_size, device)
-            r_x = self.prepare_audio_before_degradation(r_x)
-            f_e = feature_extractor(r_x.squeeze(
-                1), return_tensors="pt", sampling_rate=16000)
+            # reference_1 = random.choice(
+            #     [file for file in files_dict[files_key[0]] if file not in f[0]])
+            # reference_2 = random.choice(
+            #     [file for file in files_dict[files_key[1]] if file not in f[1]])
+            # reference_f = (reference_1, reference_2)
+            # r_x = self.load_audios(
+            #     reference_f, target_sample_rate, segment_size, device)
+            # r_x = self.prepare_audio_before_degradation(r_x)
+            # f_e = feature_extractor(r_x.squeeze(
+            #     1), return_tensors="pt", sampling_rate=16000)
+            # f_e = feature_extractor(x.squeeze(
+            #     1), return_tensors="pt", sampling_rate=16000)
+
 
             with torch.no_grad():
-                # r_embeddings = classifier.encode_batch(r_x.squeeze(1))
-                o = wav2vec(f_e.input_values.squeeze(0).to(device))
-                r_embeddings = o.hidden_states.maen(dim=1)
+                r_embeddings = classifier.encode_batch(x.squeeze(1))
+                # o = wav2vec(f_e.input_values.squeeze(0).to(device))
+                # r_embeddings = o.hidden_states[-1].mean(dim=1)
 
             degraded_sample = self.degradation(x).cpu()
             sample = diffusion.p_sample_loop(

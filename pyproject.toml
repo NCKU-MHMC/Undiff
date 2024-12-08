@@ -18,6 +18,10 @@ llvmlite = "^0.43.0"
 librosa = "^0.10.2.post1"
 numpy = "2.0.2"
 pytorch-lightning = "^2.4.0"
+speechbrain = "^1.0.2"
+nemo-toolkit = "^2.0.0"
+cython = "^3.0.11"
+packaging = "^24.2"
 
 
 [tool.poetry.group.dev.dependencies]
