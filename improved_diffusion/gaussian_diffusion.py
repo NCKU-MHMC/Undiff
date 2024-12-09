@@ -1047,13 +1047,6 @@ class CorrectorVPConditional:
 
             # if condition is None:
             #     n_spk = x.size(0) // y.size(0)
-            #     log_p_y_x = y - torch.stack(torch.chunk(x, n_spk, 0)).sum(0)
-            #     log_p_y_x = repeat(log_p_y_x, "h ... -> (r h) ...", r=n_spk)
-
-            #     normguide = torch.linalg.norm(
-            #         log_p_y_x) / (x.size(-1) ** 0.5)
-            #     sigma = torch.sqrt(self.alphas[t])
-            #     s = self.xi / (normguide * sigma + 1e-6)
 
             #     x.requires_grad_(True)
             #     e = classifier.encode_batch(x.squeeze(1))
@@ -1082,7 +1075,14 @@ class CorrectorVPConditional:
             #     sigma = torch.sqrt(self.alphas[t])
             #     s1 = self.xi / (normguide1 * sigma + 1e-6)
             #     s2 = self.xi / (normguide2 * sigma + 1e-6)
-            #     condition = (torch.vmap(lambda a,b: a*b)(s, log_p_y_x)
+
+            #     _x = (x # + coefficient * torch.vmap(lambda a,b: a*b)(s, log_p_y_x)
+            #     + torch.vmap(lambda a,b: a*b)(s1, condition1) * 0.5
+            #     + torch.vmap(lambda a,b: a*b)(s2, condition2) * 0.5)
+            #     log_p_y_x = y - torch.stack(torch.chunk(_x, n_spk, 0)).sum(0)
+            #     log_p_y_x = repeat(log_p_y_x, "h ... -> (r h) ...", r=n_spk)
+
+            #     condition = (log_p_y_x/n_spk
             #                  + torch.vmap(lambda a,b: a*b)(s1, condition1) * 0.5
             #                  + torch.vmap(lambda a,b: a*b)(s2, condition2) * 0.5)
             #     # condition = torch.vmap(lambda x,y:x/y)(condition, 2-2*torch.tensor(self.sde.alphas_cumprod, device=t.device)[t[:y.size(0)]])
@@ -1097,7 +1097,15 @@ class CorrectorVPConditional:
                   task_kwargs=None,):
         condition = None
         if source_separation:
-            x_prev = x["sample"]
+            with torch.no_grad():
+                if self.sde.input_sigma_t:
+                    eps = self.score_fn(
+                        x["sample"], _extract_into_tensor(self.sde.beta_variance, t, t.shape)
+                    )
+                else:
+                    eps = self.score_fn(x["sample"], self.sde._scale_timesteps(t))
+            x_0 = self.sde._predict_xstart_from_eps(x["sample"], t, eps)
+            x_prev = x_0
             # eps = self.sde._predict_eps_from_xstart(x, t, x["pred_xstart"])
             coefficient = 0.5
             n_spk = x_prev.size(0) // y.size(0)
@@ -1142,8 +1150,8 @@ class CorrectorVPConditional:
                 #     x_prev = (x_prev + coefficient * log_p_y_x)
                 # else:
                 x_prev = (x_prev # + coefficient * torch.vmap(lambda a,b: a*b)(s, log_p_y_x)
-                + torch.vmap(lambda a,b: a*b)(s1, condition1) * 0.5
-                + torch.vmap(lambda a,b: a*b)(s2, condition2) * 0.5)
+                + torch.vmap(lambda a,b: a*b)(s1, condition1) / steps
+                + torch.vmap(lambda a,b: a*b)(s2, condition2) / steps)
                 # x_prev = x_prev + torch.vmap(lambda a,b: a*b)(s, condition)*1000
                 x_prev = x_prev.detach()
 
@@ -1156,6 +1164,7 @@ class CorrectorVPConditional:
 
                 condition = None
 
+            x_prev = self.sde.q_sample(x_prev, t)
         else:
             for i in range(steps):
                 if self.sde.input_sigma_t:
