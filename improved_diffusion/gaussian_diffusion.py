@@ -593,6 +593,8 @@ class GaussianDiffusion:
         if use_rg_bwe:
             rg_exps.add(TaskType.BWE)
 
+
+        out = {"sample": img}
         for i in indices:
             t = th.tensor([i] * shape[0], device=device)
 
@@ -606,26 +608,26 @@ class GaussianDiffusion:
                         task_kwargs=task_kwargs,
                     )
 
-            with th.no_grad():
-                out = self.p_sample(
-                    model,
-                    img,
-                    t,
-                    clip_denoised=clip_denoised,
-                    denoised_fn=denoised_fn,
-                    model_kwargs=model_kwargs,
-                    degradation=degradation if sample_method == "BWE" else None,
-                    orig_x=orig_x,
-                )
-
             if sample_method == TaskType.SOURCE_SEPARATION:
                 assert corrector and degradation
                 y = degradation(orig_x)
                 img = corrector.update_fn_adaptive(
-                    out, img, t, y, threshold=150, steps=2, source_separation=True,
+                    out, img, t, y, threshold=150, steps=0, source_separation=True,
                     task_kwargs=task_kwargs,
                 )
                 out["sample"] = img
+
+            # with th.no_grad():
+            #     out = self.p_sample(
+            #         model,
+            #         img,
+            #         t,
+            #         clip_denoised=clip_denoised,
+            #         denoised_fn=denoised_fn,
+            #         model_kwargs=model_kwargs,
+            #         degradation=degradation if sample_method == "BWE" else None,
+            #         orig_x=orig_x,
+            #     )
 
             yield out
             img = out["sample"]
@@ -1037,59 +1039,59 @@ class CorrectorVPConditional:
         x, condition = self.update_fn(
             x, x_prev, t, y, steps, source_separation, task_kwargs=task_kwargs)
 
-        if t[0] < threshold and t[0] > 0:
-            if self.sde.input_sigma_t:
-                eps = self.score_fn(
-                    x, _extract_into_tensor(self.sde.beta_variance, t, t.shape)
-                )
-            else:
-                eps = self.score_fn(x, self.sde._scale_timesteps(t))
+        # if t[0] < threshold and t[0] > 0:
+        #     if self.sde.input_sigma_t:
+        #         eps = self.score_fn(
+        #             x, _extract_into_tensor(self.sde.beta_variance, t, t.shape)
+        #         )
+        #     else:
+        #         eps = self.score_fn(x, self.sde._scale_timesteps(t))
 
-            # if condition is None:
-            #     n_spk = x.size(0) // y.size(0)
+        #     # if condition is None:
+        #     #     n_spk = x.size(0) // y.size(0)
 
-            #     x.requires_grad_(True)
-            #     e = classifier.encode_batch(x.squeeze(1))
-            #     # x_0 = self.sde._predict_xstart_from_eps(x_prev, t, eps.detach())
-            #     # embeddings = classifier.encode_batch(x_0.squeeze(1))
-            #     # embeddings = classifier.encode_batch(x_prev.squeeze(1))
-            #     # f_e = (x - x.mean(-1, keepdim=True)) / \
-            #     #     x.std(-1, keepdim=True)
-            #     # # f_e= feature_extractor(x_0.squeeze(1), return_tensors="pt", sampling_rate=16000)
-            #     # o = wav2vec(f_e.squeeze(1))
-            #     # e = o.hidden_states[-1].mean(
-            #     #     dim=1)  # last_hidden_state to logits
-            #     loss1 = F.cosine_similarity(task_kwargs["gt_e"], e).mean()
-            #     loss2 = -F.mse_loss(task_kwargs["gt_e"], e)
-            #     print(loss1, loss2)
+        #     #     x.requires_grad_(True)
+        #     #     e = classifier.encode_batch(x.squeeze(1))
+        #     #     # x_0 = self.sde._predict_xstart_from_eps(x_prev, t, eps.detach())
+        #     #     # embeddings = classifier.encode_batch(x_0.squeeze(1))
+        #     #     # embeddings = classifier.encode_batch(x_prev.squeeze(1))
+        #     #     # f_e = (x - x.mean(-1, keepdim=True)) / \
+        #     #     #     x.std(-1, keepdim=True)
+        #     #     # # f_e= feature_extractor(x_0.squeeze(1), return_tensors="pt", sampling_rate=16000)
+        #     #     # o = wav2vec(f_e.squeeze(1))
+        #     #     # e = o.hidden_states[-1].mean(
+        #     #     #     dim=1)  # last_hidden_state to logits
+        #     #     loss1 = F.cosine_similarity(task_kwargs["gt_e"], e).mean()
+        #     #     loss2 = -F.mse_loss(task_kwargs["gt_e"], e)
+        #     #     print(loss1, loss2)
 
-            #     condition1 = torch.autograd.grad(
-            #         outputs=loss1, inputs=x, retain_graph=True)[0]
-            #     condition2 = torch.autograd.grad(
-            #         outputs=loss2, inputs=x, retain_graph=True)[0]
+        #     #     condition1 = torch.autograd.grad(
+        #     #         outputs=loss1, inputs=x, retain_graph=True)[0]
+        #     #     condition2 = torch.autograd.grad(
+        #     #         outputs=loss2, inputs=x, retain_graph=True)[0]
 
-            #     normguide1 = torch.linalg.norm(
-            #         condition1) / (x.size(-1) ** 0.5)
-            #     normguide2 = torch.linalg.norm(
-            #         condition2) / (x.size(-1) ** 0.5)
-            #     sigma = torch.sqrt(self.alphas[t])
-            #     s1 = self.xi / (normguide1 * sigma + 1e-6)
-            #     s2 = self.xi / (normguide2 * sigma + 1e-6)
+        #     #     normguide1 = torch.linalg.norm(
+        #     #         condition1) / (x.size(-1) ** 0.5)
+        #     #     normguide2 = torch.linalg.norm(
+        #     #         condition2) / (x.size(-1) ** 0.5)
+        #     #     sigma = torch.sqrt(self.alphas[t])
+        #     #     s1 = self.xi / (normguide1 * sigma + 1e-6)
+        #     #     s2 = self.xi / (normguide2 * sigma + 1e-6)
 
-            #     _x = (x # + coefficient * torch.vmap(lambda a,b: a*b)(s, log_p_y_x)
-            #     + torch.vmap(lambda a,b: a*b)(s1, condition1) * 0.5
-            #     + torch.vmap(lambda a,b: a*b)(s2, condition2) * 0.5)
-            #     log_p_y_x = y - torch.stack(torch.chunk(_x, n_spk, 0)).sum(0)
-            #     log_p_y_x = repeat(log_p_y_x, "h ... -> (r h) ...", r=n_spk)
+        #     #     _x = (x # + coefficient * torch.vmap(lambda a,b: a*b)(s, log_p_y_x)
+        #     #     + torch.vmap(lambda a,b: a*b)(s1, condition1) * 0.5
+        #     #     + torch.vmap(lambda a,b: a*b)(s2, condition2) * 0.5)
+        #     #     log_p_y_x = y - torch.stack(torch.chunk(_x, n_spk, 0)).sum(0)
+        #     #     log_p_y_x = repeat(log_p_y_x, "h ... -> (r h) ...", r=n_spk)
 
-            #     condition = (log_p_y_x/n_spk
-            #                  + torch.vmap(lambda a,b: a*b)(s1, condition1) * 0.5
-            #                  + torch.vmap(lambda a,b: a*b)(s2, condition2) * 0.5)
-            #     # condition = torch.vmap(lambda x,y:x/y)(condition, 2-2*torch.tensor(self.sde.alphas_cumprod, device=t.device)[t[:y.size(0)]])
-            if source_separation:
-                x = self.langevin_corrector_sliced(x, t, eps, y, condition)
-            else:
-                x = self.langevin_corrector(x, t, eps, y, condition)
+        #     #     condition = (log_p_y_x/n_spk
+        #     #                  + torch.vmap(lambda a,b: a*b)(s1, condition1) * 0.5
+        #     #                  + torch.vmap(lambda a,b: a*b)(s2, condition2) * 0.5)
+        #     #     # condition = torch.vmap(lambda x,y:x/y)(condition, 2-2*torch.tensor(self.sde.alphas_cumprod, device=t.device)[t[:y.size(0)]])
+        #     if source_separation:
+        #         x = self.langevin_corrector_sliced(x, t, eps, y, condition)
+        #     else:
+        #         x = self.langevin_corrector(x, t, eps, y, condition)
 
         return x
 
@@ -1164,7 +1166,9 @@ class CorrectorVPConditional:
 
                 condition = None
 
-            x_prev = self.sde.q_sample(x_prev, t)
+            if t[0] != 0:
+                x_prev = self.sde.q_sample(x_prev, t-1)
+
         else:
             for i in range(steps):
                 if self.sde.input_sigma_t:
