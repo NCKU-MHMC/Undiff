@@ -617,17 +617,18 @@ class GaussianDiffusion:
                 )
                 out["sample"] = img
 
-            # with th.no_grad():
-            #     out = self.p_sample(
-            #         model,
-            #         img,
-            #         t,
-            #         clip_denoised=clip_denoised,
-            #         denoised_fn=denoised_fn,
-            #         model_kwargs=model_kwargs,
-            #         degradation=degradation if sample_method == "BWE" else None,
-            #         orig_x=orig_x,
-            #     )
+            if sample_method == TaskType.UNCONDITIONAL:
+                with th.no_grad():
+                    out = self.p_sample(
+                        model,
+                        img,
+                        t,
+                        clip_denoised=clip_denoised,
+                        denoised_fn=denoised_fn,
+                        model_kwargs=model_kwargs,
+                        degradation=degradation if sample_method == "BWE" else None,
+                        orig_x=orig_x,
+                    )
 
             yield out
             img = out["sample"]
