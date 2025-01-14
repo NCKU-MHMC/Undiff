@@ -17,18 +17,6 @@ from .losses import discretized_gaussian_log_likelihood, normal_kl
 from .nn import mean_flat
 from .tasks import TaskType
 
-# from speechbrain.inference.speaker import EncoderClassifier
-from transformers import Wav2Vec2FeatureExtractor, Wav2Vec2Model, Wav2Vec2ForSequenceClassification
-
-# classifier = EncoderClassifier.from_hparams(source="speechbrain/spkrec-ecapa-voxceleb")
-model_name = "superb/wav2vec2-base-superb-sid"
-feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(model_name)
-wav2vec = Wav2Vec2ForSequenceClassification.from_pretrained(
-    model_name).to('cuda')
-
-from speechbrain.inference.speaker import EncoderClassifier
-classifier = EncoderClassifier.from_hparams(source="speechbrain/spkrec-ecapa-voxceleb")
-
 def get_named_beta_schedule(schedule_name, num_diffusion_timesteps):
     """
     Get a pre-defined beta schedule for the given name.
@@ -589,7 +577,7 @@ class GaussianDiffusion:
             )
 
         # rg exps require gradient calculation via obtained score model
-        rg_exps = {TaskType.VOCODING, TaskType.DECLIPPING}
+        rg_exps = {TaskType.VOCODING, TaskType.DECLIPPING, TaskType.BWE}
         if use_rg_bwe:
             rg_exps.add(TaskType.BWE)
 
@@ -600,13 +588,14 @@ class GaussianDiffusion:
 
             if sample_method in rg_exps:
                 assert corrector and degradation
-                img.requires_grad_(True)
+                # img.requires_grad_(True)
                 if i != 199:
                     y = degradation(orig_x)
                     img = corrector.update_fn_adaptive(
-                        None, img, t, y, threshold=200, steps=1, source_separation=False,
+                        None, img, t, y, threshold=200, steps=4, source_separation=False,
                         task_kwargs=task_kwargs,
                     )
+                out["sample"] = img
 
             if sample_method == TaskType.SOURCE_SEPARATION:
                 assert corrector and degradation
@@ -626,7 +615,7 @@ class GaussianDiffusion:
                         clip_denoised=clip_denoised,
                         denoised_fn=denoised_fn,
                         model_kwargs=model_kwargs,
-                        degradation=degradation if sample_method == "BWE" else None,
+                        degradation=degradation if sample_method == TaskType.BWE else None,
                         orig_x=orig_x,
                     )
 
@@ -1118,88 +1107,67 @@ class CorrectorVPConditional:
             log_p_y_x = repeat(log_p_y_x, "h ... -> (r h) ...", r=n_spk)
             # log_p_y_x = torch.vmap(lambda x,y:x/y)(log_p_y_x, 2-2*torch.tensor(self.sde.alphas_cumprod, device=t.device)[t[:y.size(0)]])
             x_prev = x_prev + log_p_y_x/n_spk
-            for i in range(steps):
-                new_samples = []
-                x_prev.requires_grad_(True)
-                e = classifier.encode_batch(x_prev.squeeze(1))
-                # x_0 = self.sde._predict_xstart_from_eps(x_prev, t, eps.detach())
-                # embeddings = classifier.encode_batch(x_0.squeeze(1))
-                # embeddings = classifier.encode_batch(x_prev.squeeze(1))
-                # f_e = (x_prev - x_prev.mean(-1, keepdim=True)) / \
-                #     x_prev.std(-1, keepdim=True)
-                # # f_e= feature_extractor(x_0.squeeze(1), return_tensors="pt", sampling_rate=16000)
-                # o = wav2vec(f_e.squeeze(1))
-                # e = o.hidden_states[-1].mean(
-                #     dim=1)  # last_hidden_state to logits
-                loss1 = F.cosine_similarity(task_kwargs["gt_e"], e).mean()
-                # print(e.shape)
-                loss2 = -F.mse_loss(task_kwargs["gt_e"], e)
-                print(loss1, loss2)
-
-                condition1 = torch.autograd.grad(
-                    outputs=loss1, inputs=x_prev, retain_graph=True)[0]
-                condition2 = torch.autograd.grad(
-                    outputs=loss2, inputs=x_prev)[0]
-
-                normguide1 = torch.linalg.norm(
-                    condition1) / (x_prev.size(-1) ** 0.5)
-                normguide2 = torch.linalg.norm(
-                    condition2) / (x_prev.size(-1) ** 0.5)
-                sigma = torch.sqrt(self.alphas[t])
-                s1 = self.xi / (normguide1 * sigma + 1e-6)
-                s2 = self.xi / (normguide2 * sigma + 1e-6)
-                # print(s1, s2)
-                # if i%2 == 0:
-                #     x_prev = (x_prev + coefficient * log_p_y_x)
-                # else:
-                x_prev = (x_prev # + coefficient * torch.vmap(lambda a,b: a*b)(s, log_p_y_x)
-                + torch.vmap(lambda a,b: a*b)(s1, condition1) / steps
-                + torch.vmap(lambda a,b: a*b)(s2, condition2) / steps)
-                # x_prev = x_prev + torch.vmap(lambda a,b: a*b)(s, condition)*1000
-                x_prev = x_prev.detach()
-
-                log_p_y_x = y - (
-                    torch.stack(torch.chunk(x_prev, n_spk, 0)).sum(0)
-                )
-                log_p_y_x = repeat(log_p_y_x, "h ... -> (r h) ...", r=n_spk)
-                # log_p_y_x = torch.vmap(lambda x,y:x/y)(log_p_y_x, 2-2*torch.tensor(self.sde.alphas_cumprod, device=t.device)[t[:y.size(0)]])
-                x_prev = x_prev + log_p_y_x/n_spk
-
-                condition = None
 
             if t[0] != 0:
                 x_prev = self.sde.q_sample(x_prev, t-1)
 
         else:
-            for i in range(steps):
-                if self.sde.input_sigma_t:
-                    eps = self.score_fn(
-                        x_prev, _extract_into_tensor(
-                            self.sde.beta_variance, t, t.shape)
-                    )
-                else:
-                    eps = self.score_fn(x_prev, self.sde._scale_timesteps(t))
+            # with torch.no_grad():
+            #     if self.sde.input_sigma_t:
+            #         eps = self.score_fn(
+            #             x_prev, _extract_into_tensor(
+            #                 self.sde.beta_variance, t, t.shape)
+            #         )
+            #     else:
+            #         eps = self.score_fn(x_prev, self.sde._scale_timesteps(t))
 
-                x_0 = self.sde._predict_xstart_from_eps(x_prev, t, eps)
-                A_x0 = self.degradation(x_0)
+            #     x_0 = self.sde._predict_xstart_from_eps(x_prev, t, eps)
 
-                if len(y.shape) < 3 and len(A_x0.shape) < 3:
-                    while len(y.shape) != 3:
-                        y = y.unsqueeze(0)
-                        A_x0 = A_x0.unsqueeze(0) - 1e-3
+            if t[0] != 0:
+                for _ in range(steps):
+                    with torch.no_grad():
+                        if self.sde.input_sigma_t:
+                            eps = self.score_fn(
+                                x_prev, _extract_into_tensor(
+                                    self.sde.beta_variance, t, t.shape)
+                            )
+                        else:
+                            eps = self.score_fn(x_prev, self.sde._scale_timesteps(t))
 
-                rec_norm = torch.linalg.norm(
-                    (y - A_x0).view(y.size(0), -1), dim=-1, ord=2
-                ).mean()
-                condition = torch.autograd.grad(
-                    outputs=rec_norm, inputs=x_prev)[0]
+                        x_0 = self.sde._predict_xstart_from_eps(x_prev, t, eps)
+                    x_0.requires_grad_(True)
+                    A_x0 = self.degradation(x_0)
 
-                normguide = torch.linalg.norm(
-                    condition) / (x_0.size(-1) ** 0.5)
-                sigma = torch.sqrt(self.alphas[t])
-                s = self.xi / (normguide * sigma + 1e-6)
+                    if len(y.shape) < 3 and len(A_x0.shape) < 3:
+                        while len(y.shape) != 3:
+                            y = y.unsqueeze(0)
+                            A_x0 = A_x0.unsqueeze(0) - 1e-3
 
-                x_prev = x_prev - s * condition
+                    rec_norm = torch.linalg.norm(
+                        (y - A_x0).view(y.size(0), -1), dim=-1, ord=2
+                    ).mean()
+                    condition = torch.autograd.grad(
+                        outputs=rec_norm, inputs=x_0)[0]
+
+                    normguide = torch.linalg.norm(
+                        condition) / (x_0.size(-1) ** 0.5)
+                    sigma = torch.sqrt(self.alphas[t])
+                    s = self.xi / (normguide * sigma + 1e-6)
+
+                    x_0 = (x_0 - s * condition).detach().type(x_0.dtype)
+                    x_prev = self.sde.q_sample(x_0, t-1)
+            else:
+                with torch.no_grad():
+                    if self.sde.input_sigma_t:
+                        eps = self.score_fn(
+                            x_prev, _extract_into_tensor(
+                                self.sde.beta_variance, t, t.shape)
+                        )
+                    else:
+                        eps = self.score_fn(x_prev, self.sde._scale_timesteps(t))
+
+                    x_0 = self.sde._predict_xstart_from_eps(x_prev, t, eps)
+                x_prev = x_0
         return x_prev.float(), condition
 
     def langevin_corrector_sliced(self, x, t, eps, y, condition=None):
